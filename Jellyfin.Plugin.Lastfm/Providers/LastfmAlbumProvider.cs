@@ -110,7 +110,7 @@ namespace Jellyfin.Plugin.Lastfm.Providers
             // Get albu info using artist and album name
             var url = LastfmArtistProvider.RootUrl + string.Format("method=album.getInfo&artist={0}&album={1}&api_key={2}&format=json", UrlEncode(artist), UrlEncode(album), LastfmArtistProvider.ApiKey);
 
-            using (var response = await _httpClientFactory.CreateClient().GetAsync(url, cancellationToken).ConfigureAwait(false))
+            using (var response = await Utils.Helpers.CreateHttpClient(_httpClientFactory).GetAsync(url, cancellationToken).ConfigureAwait(false))
             {
                 using (var stream = await response.Content.ReadAsStreamAsync())
                 {
@@ -132,7 +132,7 @@ namespace Jellyfin.Plugin.Lastfm.Providers
             // Get albu info using artist and album name
             var url = LastfmArtistProvider.RootUrl + string.Format("method=album.getInfo&mbid={0}&api_key={1}&format=json", UrlEncode(musicbraizId), LastfmArtistProvider.ApiKey);
 
-            using (var response = await _httpClientFactory.CreateClient().GetAsync(url, cancellationToken).ConfigureAwait(false))
+            using (var response = await Utils.Helpers.CreateHttpClient(_httpClientFactory).GetAsync(url, cancellationToken).ConfigureAwait(false))
             {
                 using (var stream = await response.Content.ReadAsStreamAsync())
                 {

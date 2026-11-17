@@ -154,7 +154,7 @@ namespace Jellyfin.Plugin.Lastfm.Providers
 
         public Task<HttpResponseMessage> GetImageResponse(string url, CancellationToken cancellationToken)
         {
-            return _httpClientFactory.CreateClient().GetAsync(url, cancellationToken);
+            return Utils.Helpers.CreateHttpClient(_httpClientFactory).GetAsync(url, cancellationToken);
         }
     }
 }

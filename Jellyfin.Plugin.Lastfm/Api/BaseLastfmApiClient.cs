@@ -26,7 +26,7 @@
         public BaseLastfmApiClient(IHttpClientFactory httpClientFactory, ILogger logger)
         {
             _httpClientFactory = httpClientFactory;
-            _httpClient = _httpClientFactory.CreateClient();
+            _httpClient = Helpers.CreateHttpClient(_httpClientFactory);
             _logger = logger;
         }
 

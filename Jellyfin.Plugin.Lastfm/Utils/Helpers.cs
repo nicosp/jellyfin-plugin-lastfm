@@ -6,11 +6,28 @@
     using System;
     using System.Collections.Generic;
     using System.Linq;
+    using System.Net.Http;
+    using MediaBrowser.Common.Net;
     using System.Security.Cryptography;
     using System.Text;
 
     public static class Helpers
     {
+        private static readonly string UserAgentProduct =
+            "Jellyfin-Plugin-Lastfm/" + typeof(Helpers).Assembly.GetName().Version;
+
+        /// <summary>
+        /// Creates an HTTP client for Last.fm requests. Last.fm asks clients to send an
+        /// identifiable User-Agent on every request (https://www.last.fm/api/intro).
+        /// Jellyfin's default named client already identifies the server; this adds the plugin.
+        /// </summary>
+        public static HttpClient CreateHttpClient(IHttpClientFactory httpClientFactory)
+        {
+            var client = httpClientFactory.CreateClient(NamedClient.Default);
+            client.DefaultRequestHeaders.UserAgent.TryParseAdd(UserAgentProduct);
+            return client;
+        }
+
         public static string CreateMd5Hash(string input)
         {
             // Use input string to calculate MD5 hash

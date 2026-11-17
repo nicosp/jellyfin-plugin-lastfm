@@ -44,6 +44,23 @@ public sealed class LoginAndHandlerTests
     }
 
     [Fact]
+    public void ScrobbleFollowsLastfmClientGuidelines()
+    {
+        var context = new ScrobbleTestContext();
+        var track = context.CreateTrack();
+        track.IndexNumber = 7;
+
+        context.Start(track);
+        context.Stop(track, track.RunTimeTicks!.Value);
+
+        var scrobble = Assert.Single(context.Http.Requests, r => r.Body.Contains("method=track.scrobble", StringComparison.Ordinal));
+        Assert.Equal("https", scrobble.Uri.Scheme);
+        Assert.Contains("duration=200", scrobble.Body);
+        Assert.Contains("trackNumber=7", scrobble.Body);
+        Assert.All(context.Http.UserAgents, ua => Assert.Contains("Jellyfin-Plugin-Lastfm/", ua));
+    }
+
+    [Fact]
     public void HandlerExceptionIsLoggedInsteadOfEscaping()
     {
         var context = new ScrobbleTestContext();

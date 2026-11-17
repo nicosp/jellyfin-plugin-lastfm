@@ -22,7 +22,7 @@ namespace Jellyfin.Plugin.Lastfm.Providers
     {
         private readonly IHttpClientFactory _httpClientFactory;
 
-        internal const string RootUrl = @"http://ws.audioscrobbler.com/2.0/?";
+        internal const string RootUrl = @"https://ws.audioscrobbler.com/2.0/?";
         internal static string ApiKey = "7b76553c3eb1d341d642755aecc40a33";
 
         private readonly IServerConfigurationManager _config;
@@ -68,7 +68,7 @@ namespace Jellyfin.Plugin.Lastfm.Providers
 
             LastfmGetArtistResult result;
 
-            using (var response = await _httpClientFactory.CreateClient().GetAsync(url, cancellationToken).ConfigureAwait(false))
+            using (var response = await Utils.Helpers.CreateHttpClient(_httpClientFactory).GetAsync(url, cancellationToken).ConfigureAwait(false))
             {
                 using (var stream = await response.Content.ReadAsStreamAsync())
                 {

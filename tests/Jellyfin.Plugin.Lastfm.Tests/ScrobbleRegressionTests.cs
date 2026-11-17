@@ -317,6 +317,8 @@ internal sealed class FakeHttp : HttpMessageHandler
     /// <summary>When set, mobile session (login) requests wait on it before responding.</summary>
     public TaskCompletionSource LoginGate { get; set; }
 
+    public List<string> UserAgents { get; } = new();
+
     private readonly List<(string Body, Uri Uri)> _requests = new();
 
     public IReadOnlyList<(string Body, Uri Uri)> Requests
@@ -338,6 +340,7 @@ internal sealed class FakeHttp : HttpMessageHandler
         lock (_requests)
         {
             _requests.Add((body, request.RequestUri!));
+            UserAgents.Add(request.Headers.UserAgent.ToString());
         }
 
         if (LoginGate is not null && body.Contains("method=auth.getMobileSession", StringComparison.Ordinal))

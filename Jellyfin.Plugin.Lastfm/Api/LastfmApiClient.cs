@@ -130,6 +130,11 @@
             {
                 request.AlbumArtist = albumArtist;
             }
+            if (item.RunTimeTicks is > 0)
+            {
+                request.Duration = (int)TimeSpan.FromTicks(item.RunTimeTicks.Value).TotalSeconds;
+            }
+            request.TrackNumber = item.IndexNumber;
 
             var accepted = false;
             try
@@ -146,7 +151,7 @@
 
                 if (response.IsError())
                 {
-                    _logger.LogError("Scrobble failed: user={User}, errorCode={ErrorCode}, message={Message}, payload={Payload}", user.Username, response.ErrorCode, response.Message, DescribeRequest(request));
+                    _logger.LogError("Scrobble failed: user={User}, errorCode={ErrorCode}, message={Message}, hint={Hint}, payload={Payload}", user.Username, response.ErrorCode, response.Message, DescribeApiError(response.ErrorCode), DescribeRequest(request));
                     return;
                 }
 
@@ -222,7 +227,7 @@
                     return;
                 }
 
-                _logger.LogError("Failed to send now playing for track: {0}", item.Name);
+                _logger.LogError("Failed to send now playing for track: {Track}, errorCode={ErrorCode}, message={Message}, hint={Hint}", item.Name, response?.ErrorCode, response?.Message, DescribeApiError(response?.ErrorCode ?? 0));
             }
             catch (Exception ex)
             {
@@ -266,7 +271,7 @@
                     return true;
                 }
 
-                _logger.LogError("{Username} Failed to {LoveState}love track '{Track}' - {Response}", user.Username, love ? "" : "un", item.Name, response.Message);
+                _logger.LogError("{Username} Failed to {LoveState}love track '{Track}' - errorCode={ErrorCode}, message={Message}, hint={Hint}", user.Username, love ? "" : "un", item.Name, response?.ErrorCode, response?.Message, DescribeApiError(response?.ErrorCode ?? 0));
                 return false;
             }
             catch (Exception ex)
@@ -349,6 +354,20 @@
 
             return string.Join("&", parts);
         }
+
+        /// <summary>
+        /// Explains the API error codes that need action from the user or that Last.fm says are temporary.
+        /// See https://www.last.fm/api/scrobbling and https://www.last.fm/api/show/track.scrobble.
+        /// </summary>
+        internal static string DescribeApiError(int errorCode) => errorCode switch
+        {
+            9 => "Session key is no longer valid. Re-link this user's Last.fm account on the plugin configuration page.",
+            11 or 16 => "Last.fm is temporarily unavailable.",
+            26 => "The plugin's API key has been suspended by Last.fm.",
+            29 => "Rate limit exceeded: this server has made too many requests to Last.fm in a short period.",
+            0 => "No response or unparseable response from Last.fm.",
+            _ => "Request rejected by Last.fm; retrying unchanged will not help."
+        };
 
         /// <summary>
         /// Last.fm leaves the ignoredMessage text empty in some responses, so fall back to
