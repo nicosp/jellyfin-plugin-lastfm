@@ -42,7 +42,11 @@
                 new PluginPageInfo
                 {
                     Name = "lastfm",
-                    EmbeddedResourcePath = GetType().Namespace + ".Configuration.configPage.html"
+                    EmbeddedResourcePath = GetType().Namespace + ".Configuration.configPage.html",
+                    // List the settings page in the dashboard sidebar, not only behind the plugin card.
+                    EnableInMainMenu = true,
+                    DisplayName = "Last.fm",
+                    MenuIcon = "music_note"
                 },
                 new PluginPageInfo
                 {
