@@ -36,15 +36,16 @@
         /// <typeparam name="TRequest">The type of the request</typeparam>
         /// <typeparam name="TResponse">The type of the response</typeparam>
         /// <param name="request">The request</param>
+        /// <param name="apiHostOverride">Host to send this one request to instead of the configured one. Never changes the shared configuration.</param>
         /// <returns>A response with type TResponse</returns>
-        public async Task<TResponse> Post<TRequest, TResponse>(TRequest request) where TRequest : BaseRequest where TResponse : BaseResponse
+        public async Task<TResponse> Post<TRequest, TResponse>(TRequest request, string apiHostOverride = null) where TRequest : BaseRequest where TResponse : BaseResponse
         {
             var data = request.ToDictionary();
 
             // Append the signature
             Helpers.AppendSignature(ref data);
 
-            var url = BuildPostUrl(request.Secure, GetApiEndpointHost());
+            var url = BuildPostUrl(request.Secure, GetApiEndpointHost(apiHostOverride));
             LogRequestDiagnostics(data, url, HttpMethod.Post.Method);
             using var requestMessage = new HttpRequestMessage(HttpMethod.Post, url);
             requestMessage.Content = new StringContent(SetPostData(data), Encoding.UTF8, "application/x-www-form-urlencoded");
@@ -106,9 +107,11 @@
                                 );
         }
 
-        private static string GetApiEndpointHost()
+        protected static string GetApiEndpointHost(string apiHostOverride = null)
         {
-            var configured = Plugin.Instance?.PluginConfiguration?.LastfmApiHost;
+            var configured = string.IsNullOrWhiteSpace(apiHostOverride)
+                ? Plugin.Instance?.PluginConfiguration?.LastfmApiHost
+                : apiHostOverride;
             return NormalizeEndpointHost(configured, Strings.Endpoints.LastfmApi);
         }
 

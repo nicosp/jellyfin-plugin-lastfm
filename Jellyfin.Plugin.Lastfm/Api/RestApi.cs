@@ -1,18 +1,27 @@
 ﻿using Microsoft.Extensions.Logging;
 using System.Net.Http;
+using System.Threading.Tasks;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using System;
+using Jellyfin.Plugin.Lastfm.Models.Responses;
 
 namespace Jellyfin.Plugin.Lastfm.Api
 {
 
+    /// <summary>
+    /// Exchanges Last.fm credentials for a session key. Used by the plugin configuration page.
+    /// </summary>
+    /// <remarks>
+    /// Restricted to administrators: the endpoint makes outbound requests to a caller-supplied host,
+    /// and only admins can open the configuration page that calls it.
+    /// </remarks>
     [ApiController]
+    [Authorize(Policy = "RequiresElevation")]
     [Route("Lastfm/Login")]
     public class RestApi : ControllerBase
     {
         private readonly LastfmApiClient _apiClient;
         private readonly ILogger<RestApi> _logger;
-        private static readonly object _apiHostLock = new();
 
         public RestApi(IHttpClientFactory httpClientFactory, ILoggerFactory loggerFactory)
         {
@@ -22,38 +31,18 @@ namespace Jellyfin.Plugin.Lastfm.Api
 
         [HttpPost]
         [Consumes("application/json")]
-        public object CreateMobileSession([FromBody] LastFMUser lastFMUser)
+        public async Task<ActionResult<MobileSessionResponse>> CreateMobileSession([FromBody] LastFMUser lastFMUser)
         {
-            _logger.LogInformation("Fetching Last.fm mobilesession auth for Username={0}", lastFMUser.Username);
-            return ExecuteWithApiHostOverride(lastFMUser.ApiHost, () => _apiClient.RequestSession(lastFMUser.Username, lastFMUser.Password).Result);
-        }
-
-        private static object ExecuteWithApiHostOverride(string apiHost, Func<object> action)
-        {
-            lock (_apiHostLock)
+            if (lastFMUser == null || string.IsNullOrWhiteSpace(lastFMUser.Username) || string.IsNullOrWhiteSpace(lastFMUser.Password))
             {
-                var config = Plugin.Instance?.PluginConfiguration;
-                if (config == null)
-                {
-                    return action();
-                }
-
-                var originalHost = config.LastfmApiHost;
-
-                if (!string.IsNullOrWhiteSpace(apiHost))
-                {
-                    config.LastfmApiHost = apiHost;
-                }
-
-                try
-                {
-                    return action();
-                }
-                finally
-                {
-                    config.LastfmApiHost = originalHost;
-                }
+                return BadRequest("Username and password are required.");
             }
+
+            _logger.LogInformation("Fetching Last.fm mobilesession auth for Username={Username}", lastFMUser.Username);
+
+            // The host is passed per request rather than written into the shared plugin configuration,
+            // so concurrent scrobbles for other users keep going to the configured host.
+            return await _apiClient.RequestSession(lastFMUser.Username, lastFMUser.Password, lastFMUser.ApiHost).ConfigureAwait(false);
         }
     }
 

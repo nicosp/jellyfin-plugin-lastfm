@@ -64,7 +64,20 @@
         /// <summary>
         /// Let last fm know when a user favourites or unfavourites a track
         /// </summary>
-        async void UserDataSaved(object sender, UserDataSaveEventArgs e)
+        private async void UserDataSaved(object sender, UserDataSaveEventArgs e)
+        {
+            // async void: an exception escaping here would crash the whole server process.
+            try
+            {
+                await HandleUserDataSavedAsync(e).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unhandled error in UserDataSaved handler for {Track}", e?.Item?.Name);
+            }
+        }
+
+        private async Task HandleUserDataSavedAsync(UserDataSaveEventArgs e)
         {
             // We only care about music, not audiobooks.
             if (e.Item is not Audio || e.Item is AudioBook)
@@ -137,6 +150,19 @@
         /// Playback stopped is run when a track is finished.
         /// </summary>
         private async void PlaybackStopped(object sender, PlaybackStopEventArgs e)
+        {
+            // async void: an exception escaping here would crash the whole server process.
+            try
+            {
+                await HandlePlaybackStoppedAsync(e).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unhandled error in PlaybackStopped handler for {Track}", e?.Item?.Name);
+            }
+        }
+
+        private async Task HandlePlaybackStoppedAsync(PlaybackStopEventArgs e)
         {
             // We only care about music, not audiobooks.
             if (e.Item is not Audio || e.Item is AudioBook)
@@ -219,6 +245,19 @@
         /// Let Last.fm know when a user has started listening to a track
         /// </summary>
         private async void PlaybackStart(object sender, PlaybackProgressEventArgs e)
+        {
+            // async void: an exception escaping here would crash the whole server process.
+            try
+            {
+                await HandlePlaybackStartAsync(e).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Unhandled error in PlaybackStart handler for {Track}", e?.Item?.Name);
+            }
+        }
+
+        private async Task HandlePlaybackStartAsync(PlaybackProgressEventArgs e)
         {
             // We only care about music, not audiobooks.
             if (e.Item is not Audio || e.Item is AudioBook)

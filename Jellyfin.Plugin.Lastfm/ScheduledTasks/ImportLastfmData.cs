@@ -70,21 +70,27 @@
 
             Plugin.Syncing = true;
 
-            var usersProcessed = 0;
-            var totalUsers = users.Count;
-
-            foreach (var user in users)
+            // Always clear the flag: if it stays set after a failed or cancelled run,
+            // favourite changes stop being sent to Last.fm until the server restarts.
+            try
             {
-                cancellationToken.ThrowIfCancellationRequested();
+                var usersProcessed = 0;
+                var totalUsers = users.Count;
 
-                var progressOffset = ((double)usersProcessed++ / totalUsers);
-                var maxProgressForStage = ((double)usersProcessed / totalUsers);
+                foreach (var user in users)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
 
+                    var progressOffset = ((double)usersProcessed++ / totalUsers);
+                    var maxProgressForStage = ((double)usersProcessed / totalUsers);
 
-                await SyncDataforUserByArtistBulk(user, progress, cancellationToken, maxProgressForStage, progressOffset);
+                    await SyncDataforUserByArtistBulk(user, progress, cancellationToken, maxProgressForStage, progressOffset);
+                }
             }
-
-            Plugin.Syncing = false;
+            finally
+            {
+                Plugin.Syncing = false;
+            }
         }
 
         private async Task SyncDataforUserByArtistBulk(User user, IProgress<double> progress, CancellationToken cancellationToken, double maxProgress, double progressOffset)

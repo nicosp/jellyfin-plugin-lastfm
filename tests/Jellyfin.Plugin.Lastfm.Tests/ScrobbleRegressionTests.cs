@@ -1,4 +1,4 @@
-using System.Net;
+﻿using System.Net;
 using System.Reflection;
 using Jellyfin.Database.Implementations.Entities;
 using Jellyfin.Plugin.Lastfm;
@@ -19,6 +19,7 @@ namespace Jellyfin.Plugin.Lastfm.Tests;
 /// <summary>
 /// Protects scrobbling behavior against previously identified edge cases.
 /// </summary>
+[Collection(PluginInstanceCollection.Name)]
 public sealed class ScrobbleRegressionTests
 {
     [Fact]
@@ -313,11 +314,37 @@ internal sealed class FakeHttp : HttpMessageHandler
 
     public List<string> Bodies { get; } = new();
 
+    /// <summary>When set, mobile session (login) requests wait on it before responding.</summary>
+    public TaskCompletionSource LoginGate { get; set; }
+
+    private readonly List<(string Body, Uri Uri)> _requests = new();
+
+    public IReadOnlyList<(string Body, Uri Uri)> Requests
+    {
+        get
+        {
+            lock (_requests)
+            {
+                return _requests.ToList();
+            }
+        }
+    }
+
     protected override async Task<HttpResponseMessage> SendAsync(
         HttpRequestMessage request,
         CancellationToken cancellationToken)
     {
         var body = await request.Content!.ReadAsStringAsync(cancellationToken);
+        lock (_requests)
+        {
+            _requests.Add((body, request.RequestUri!));
+        }
+
+        if (LoginGate is not null && body.Contains("method=auth.getMobileSession", StringComparison.Ordinal))
+        {
+            await LoginGate.Task;
+        }
+
         if (!body.Contains("method=track.scrobble", StringComparison.Ordinal))
         {
             return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent("{}") };
@@ -344,4 +371,14 @@ internal sealed class FakeHttp : HttpMessageHandler
         };
         return new HttpResponseMessage(HttpStatusCode.OK) { Content = new StringContent(json) };
     }
+}
+
+/// <summary>
+/// Every test context replaces the static <see cref="Plugin.Instance"/>, so test classes
+/// that create one must not run in parallel with each other.
+/// </summary>
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class PluginInstanceCollection
+{
+    public const string Name = "Plugin.Instance";
 }

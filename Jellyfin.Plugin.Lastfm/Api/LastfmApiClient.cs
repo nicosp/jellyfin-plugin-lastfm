@@ -30,8 +30,11 @@
 
 
 
-        public async Task<MobileSessionResponse> RequestSession(string username, string password)
+        /// <param name="apiHost">Host to authenticate against (e.g. libre.fm). Falls back to the configured host when empty.</param>
+        public async Task<MobileSessionResponse> RequestSession(string username, string password, string apiHost = null)
         {
+            var host = GetApiEndpointHost(apiHost);
+
             //Build request object
             var request = new MobileSessionRequest
             {
@@ -43,15 +46,15 @@
                 Secure = true
             };
 
-            var response = await Post<MobileSessionRequest, MobileSessionResponse>(request);
+            var response = await Post<MobileSessionRequest, MobileSessionResponse>(request, host);
 
-            if (ShouldRetryWithLegacyAuthToken(response))
+            if (ShouldRetryWithLegacyAuthToken(response, host))
             {
-                _logger.LogInformation("Retrying mobile session auth with legacy authToken flow for host={Host}", Plugin.Instance?.PluginConfiguration?.LastfmApiHost);
+                _logger.LogInformation("Retrying mobile session auth with legacy authToken flow for host={Host}", host);
 
                 request.Password = null;
                 request.AuthToken = BuildLegacyAuthToken(username, password);
-                response = await Post<MobileSessionRequest, MobileSessionResponse>(request);
+                response = await Post<MobileSessionRequest, MobileSessionResponse>(request, host);
             }
 
 
@@ -64,15 +67,14 @@
             return Helpers.CreateMd5Hash(username + passwordHash).ToLowerInvariant();
         }
 
-        private static bool ShouldRetryWithLegacyAuthToken(MobileSessionResponse response)
+        private static bool ShouldRetryWithLegacyAuthToken(MobileSessionResponse response, string host)
         {
             if (response == null || !response.IsError())
             {
                 return false;
             }
 
-            var configuredHost = Plugin.Instance?.PluginConfiguration?.LastfmApiHost;
-            var isLibreHost = !string.IsNullOrWhiteSpace(configuredHost) && configuredHost.Contains("libre.fm", StringComparison.OrdinalIgnoreCase);
+            var isLibreHost = !string.IsNullOrWhiteSpace(host) && host.Contains("libre.fm", StringComparison.OrdinalIgnoreCase);
             if (!isLibreHost)
             {
                 return false;
