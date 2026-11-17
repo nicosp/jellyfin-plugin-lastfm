@@ -38,7 +38,7 @@
         /// <param name="request">The request</param>
         /// <param name="apiHostOverride">Host to send this one request to instead of the configured one. Never changes the shared configuration.</param>
         /// <returns>A response with type TResponse</returns>
-        public async Task<TResponse> Post<TRequest, TResponse>(TRequest request, string apiHostOverride = null) where TRequest : BaseRequest where TResponse : BaseResponse
+        public async Task<TResponse> Post<TRequest, TResponse>(TRequest request, string apiHostOverride = null) where TRequest : BaseRequest where TResponse : BaseResponse, new()
         {
             var data = request.ToDictionary();
 
@@ -47,45 +47,78 @@
 
             var url = BuildPostUrl(request.Secure, GetApiEndpointHost(apiHostOverride));
             LogRequestDiagnostics(data, url, HttpMethod.Post.Method);
-            using var requestMessage = new HttpRequestMessage(HttpMethod.Post, url);
-            requestMessage.Content = new StringContent(SetPostData(data), Encoding.UTF8, "application/x-www-form-urlencoded");
-            using (var response = await _httpClient.SendAsync(requestMessage, CancellationToken.None))
-            {
-                var result = await TryDeserializeResponse<TResponse>(response, url, HttpMethod.Post.Method);
-                if (result == null)
+            var body = SetPostData(data);
+
+            return await SendAsync<TResponse>(
+                () => new HttpRequestMessage(HttpMethod.Post, url)
                 {
-                    return null;
-                }
-
-                if (result.IsError())
-                    _logger.LogError(result.Message);
-
-                return result;
-            }
+                    Content = new StringContent(body, Encoding.UTF8, "application/x-www-form-urlencoded")
+                },
+                url,
+                CancellationToken.None).ConfigureAwait(false);
         }
 
-        public async Task<TResponse> Get<TRequest, TResponse>(TRequest request) where TRequest : BaseRequest where TResponse : BaseResponse
+        public async Task<TResponse> Get<TRequest, TResponse>(TRequest request) where TRequest : BaseRequest where TResponse : BaseResponse, new()
         {
             return await Get<TRequest, TResponse>(request, CancellationToken.None);
         }
 
-        public async Task<TResponse> Get<TRequest, TResponse>(TRequest request, CancellationToken cancellationToken) where TRequest : BaseRequest where TResponse : BaseResponse
+        public async Task<TResponse> Get<TRequest, TResponse>(TRequest request, CancellationToken cancellationToken) where TRequest : BaseRequest where TResponse : BaseResponse, new()
         {
             var url = BuildGetUrl(request.ToDictionary(), request.Secure, GetApiEndpointHost());
-            using (var response = await _httpClient.GetAsync(url, cancellationToken))
+            return await SendAsync<TResponse>(() => new HttpRequestMessage(HttpMethod.Get, url), url, cancellationToken).ConfigureAwait(false);
+        }
+
+        /// <summary>
+        /// Sends a request, honouring Last.fm rate limiting (HTTP 429 or API error 29) for the whole server.
+        /// While rate limited, nothing is sent and an error-29 response is returned instead,
+        /// so callers handle both cases the same way.
+        /// </summary>
+        private async Task<TResponse> SendAsync<TResponse>(Func<HttpRequestMessage> createRequest, string url, CancellationToken cancellationToken) where TResponse : BaseResponse, new()
+        {
+            if (LastfmRateLimit.IsLimited(out var remaining))
             {
-                var result = await TryDeserializeResponse<TResponse>(response, url, HttpMethod.Get.Method);
-                if (result == null)
-                {
-                    return null;
-                }
+                _logger.LogDebug("Last.fm rate limit in effect for another {Remaining}; not sending {Url}", remaining, url);
+                return RateLimitedResponse<TResponse>(remaining);
+            }
 
-                if (result.IsError())
-                    _logger.LogError(result.Message);
+            using var requestMessage = createRequest();
+            var method = requestMessage.Method.Method;
+            using var response = await _httpClient.SendAsync(requestMessage, cancellationToken).ConfigureAwait(false);
 
+            if (LastfmRateLimit.IsRateLimitResponse(response))
+            {
+                var pause = LastfmRateLimit.RegisterLimit(response);
+                _logger.LogWarning("Last.fm rate limit hit (HTTP 429) on {Method} {Url}. Pausing all Last.fm requests for {Pause}", method, url, pause);
+                return RateLimitedResponse<TResponse>(pause);
+            }
+
+            var result = await TryDeserializeResponse<TResponse>(response, url, method);
+            if (result == null)
+            {
+                return null;
+            }
+
+            if (result.ErrorCode == LastfmRateLimit.RateLimitErrorCode)
+            {
+                var pause = LastfmRateLimit.RegisterLimit(response);
+                _logger.LogWarning("Last.fm rate limit hit (error 29) on {Method} {Url}. Pausing all Last.fm requests for {Pause}", method, url, pause);
                 return result;
             }
+
+            LastfmRateLimit.RegisterSuccess();
+
+            if (result.IsError())
+                _logger.LogError(result.Message);
+
+            return result;
         }
+
+        private static TResponse RateLimitedResponse<TResponse>(TimeSpan pause) where TResponse : BaseResponse, new() => new()
+        {
+            ErrorCode = LastfmRateLimit.RateLimitErrorCode,
+            Message = $"Rate limited by Last.fm; requests paused for {pause:hh\\:mm\\:ss}"
+        };
 
         #region Private methods
         private static string BuildGetUrl(Dictionary<string, string> requestData, bool secure, string endpointHost)

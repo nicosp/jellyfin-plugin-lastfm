@@ -110,21 +110,16 @@ namespace Jellyfin.Plugin.Lastfm.Providers
             // Get albu info using artist and album name
             var url = LastfmArtistProvider.RootUrl + string.Format("method=album.getInfo&artist={0}&album={1}&api_key={2}&format=json", UrlEncode(artist), UrlEncode(album), LastfmArtistProvider.ApiKey);
 
-            using (var response = await Utils.Helpers.CreateHttpClient(_httpClientFactory).GetAsync(url, cancellationToken).ConfigureAwait(false))
+            var jsonText = await Utils.Helpers.GetLastfmJsonAsync(_httpClientFactory, url, _logger, cancellationToken).ConfigureAwait(false);
+            if (jsonText == null)
             {
-                using (var stream = await response.Content.ReadAsStreamAsync())
-                {
-                    using (var reader = new StreamReader(stream))
-                    {
-                        var jsonText = await reader.ReadToEndAsync().ConfigureAwait(false);
-
-                        // Fix their bad json
-                        jsonText = jsonText.Replace("\"#text\"", "\"url\"");
-
-                        return JsonSerializer.Deserialize<LastfmGetAlbumResult>(jsonText);
-                    }
-                }
+                return null;
             }
+
+            // Fix their bad json
+            jsonText = jsonText.Replace("\"#text\"", "\"url\"");
+
+            return JsonSerializer.Deserialize<LastfmGetAlbumResult>(jsonText);
         }
 
         private async Task<LastfmGetAlbumResult> GetAlbumResult(string musicbraizId, CancellationToken cancellationToken)
@@ -132,21 +127,16 @@ namespace Jellyfin.Plugin.Lastfm.Providers
             // Get albu info using artist and album name
             var url = LastfmArtistProvider.RootUrl + string.Format("method=album.getInfo&mbid={0}&api_key={1}&format=json", UrlEncode(musicbraizId), LastfmArtistProvider.ApiKey);
 
-            using (var response = await Utils.Helpers.CreateHttpClient(_httpClientFactory).GetAsync(url, cancellationToken).ConfigureAwait(false))
+            var jsonText = await Utils.Helpers.GetLastfmJsonAsync(_httpClientFactory, url, _logger, cancellationToken).ConfigureAwait(false);
+            if (jsonText == null)
             {
-                using (var stream = await response.Content.ReadAsStreamAsync())
-                {
-                    using (var reader = new StreamReader(stream))
-                    {
-                        var jsonText = await reader.ReadToEndAsync().ConfigureAwait(false);
-
-                        // Fix their bad json
-                        jsonText = jsonText.Replace("\"#text\"", "\"url\"");
-
-                        return JsonSerializer.Deserialize<LastfmGetAlbumResult>(jsonText);
-                    }
-                }
+                return null;
             }
+
+            // Fix their bad json
+            jsonText = jsonText.Replace("\"#text\"", "\"url\"");
+
+            return JsonSerializer.Deserialize<LastfmGetAlbumResult>(jsonText);
         }
 
         private void ProcessAlbumData(MusicAlbum item, LastfmAlbum data, string musicBrainzId)

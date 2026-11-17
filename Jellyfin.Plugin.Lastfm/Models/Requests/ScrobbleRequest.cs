@@ -1,6 +1,7 @@
 ﻿namespace Jellyfin.Plugin.Lastfm.Models.Requests
 {
     using System.Collections.Generic;
+    using System.Globalization;
     using System.Runtime.Serialization;
 
     [DataContract]
@@ -20,34 +21,73 @@
 
         public override Dictionary<string, string> ToDictionary()
         {
-            var scrobbleRequest = new Dictionary<string, string>(base.ToDictionary())
+            var data = new Dictionary<string, string>(base.ToDictionary());
+            foreach (var field in TrackFields())
+            {
+                data.Add(field.Key, field.Value);
+            }
+
+            return data;
+        }
+
+        /// <summary>
+        /// The per-track parameters, without the method, API key or session key.
+        /// </summary>
+        public Dictionary<string, string> TrackFields()
+        {
+            var fields = new Dictionary<string, string>
             {
                 { "track",     Track },
                 { "artist",    Artist },
-                { "timestamp", Timestamp.ToString() },
+                { "timestamp", Timestamp.ToString(CultureInfo.InvariantCulture) },
             };
             if (!string.IsNullOrWhiteSpace(Album))
             {
-                scrobbleRequest.Add("album", Album);
+                fields.Add("album", Album);
             }
             if (!string.IsNullOrWhiteSpace(MbId))
             {
-                scrobbleRequest.Add("mbid", MbId);
+                fields.Add("mbid", MbId);
             }
             if (!string.IsNullOrWhiteSpace(AlbumArtist))
             {
-                scrobbleRequest.Add("albumArtist", AlbumArtist);
+                fields.Add("albumArtist", AlbumArtist);
             }
             if (Duration is > 0)
             {
-                scrobbleRequest.Add("duration", Duration.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                fields.Add("duration", Duration.Value.ToString(CultureInfo.InvariantCulture));
             }
             if (TrackNumber is > 0)
             {
-                scrobbleRequest.Add("trackNumber", TrackNumber.Value.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                fields.Add("trackNumber", TrackNumber.Value.ToString(CultureInfo.InvariantCulture));
             }
 
-            return scrobbleRequest;
+            return fields;
+        }
+    }
+
+    /// <summary>
+    /// Submits up to 50 scrobbles in one track.scrobble request, using array notation
+    /// (artist[0], track[0], ...). See https://www.last.fm/api/show/track.scrobble.
+    /// </summary>
+    public class BatchScrobbleRequest : BaseAuthedRequest
+    {
+        public const int MaxBatchSize = 50;
+
+        public IReadOnlyList<ScrobbleRequest> Scrobbles { get; set; } = new List<ScrobbleRequest>();
+
+        public override Dictionary<string, string> ToDictionary()
+        {
+            var data = new Dictionary<string, string>(base.ToDictionary());
+            for (var i = 0; i < Scrobbles.Count; i++)
+            {
+                foreach (var field in Scrobbles[i].TrackFields())
+                {
+                    data.Add(string.Format(CultureInfo.InvariantCulture, "{0}[{1}]", field.Key, i), field.Value);
+                }
+            }
+
+            return data;
         }
     }
 }

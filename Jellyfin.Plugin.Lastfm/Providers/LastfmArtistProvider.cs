@@ -68,21 +68,16 @@ namespace Jellyfin.Plugin.Lastfm.Providers
 
             LastfmGetArtistResult result;
 
-            using (var response = await Utils.Helpers.CreateHttpClient(_httpClientFactory).GetAsync(url, cancellationToken).ConfigureAwait(false))
+            var jsonText = await Utils.Helpers.GetLastfmJsonAsync(_httpClientFactory, url, _logger, cancellationToken).ConfigureAwait(false);
+            if (jsonText == null)
             {
-                using (var stream = await response.Content.ReadAsStreamAsync())
-                {
-                    using (var reader = new StreamReader(stream))
-                    {
-                        var jsonText = await reader.ReadToEndAsync().ConfigureAwait(false);
-
-                        // Fix their bad json
-                        jsonText = jsonText.Replace("\"#text\"", "\"url\"");
-
-                        result = JsonSerializer.Deserialize<LastfmGetArtistResult>(jsonText);
-                    }
-                }
+                return;
             }
+
+            // Fix their bad json
+            jsonText = jsonText.Replace("\"#text\"", "\"url\"");
+
+            result = JsonSerializer.Deserialize<LastfmGetArtistResult>(jsonText);
 
             if (result != null && result.artist != null)
             {

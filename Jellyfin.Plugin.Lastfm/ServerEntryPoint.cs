@@ -38,7 +38,13 @@
         private readonly MemoryCache _playbackStartTimes = new(new MemoryCacheOptions());
         private readonly object _playbackStartTimesLock = new();
 
+        // Queued scrobbles are retried on this interval, and shortly after startup.
+        private static readonly TimeSpan QueueFlushInterval = TimeSpan.FromMinutes(5);
+        private static readonly TimeSpan QueueFlushStartupDelay = TimeSpan.FromSeconds(30);
+
         private LastfmApiClient _apiClient;
+        private CancellationTokenSource _flushCancellation;
+        private Task _flushLoop;
         private readonly ILogger<ServerEntryPoint> _logger;
 
         /// <summary>
@@ -320,14 +326,62 @@
             _sessionManager.PlaybackStart += PlaybackStart;
             _sessionManager.PlaybackStopped += PlaybackStopped;
             _userDataManager.UserDataSaved += UserDataSaved;
+
+            _flushCancellation = new CancellationTokenSource();
+            _flushLoop = RunQueueFlushLoopAsync(_apiClient, _flushCancellation.Token);
             return Task.CompletedTask;
+        }
+
+        /// <summary>
+        /// Periodically resubmits scrobbles that failed for a temporary reason.
+        /// </summary>
+        private async Task RunQueueFlushLoopAsync(LastfmApiClient apiClient, CancellationToken cancellationToken)
+        {
+            try
+            {
+                await Task.Delay(QueueFlushStartupDelay, cancellationToken).ConfigureAwait(false);
+
+                using var timer = new PeriodicTimer(QueueFlushInterval);
+                do
+                {
+                    try
+                    {
+                        await apiClient.FlushQueueAsync(cancellationToken).ConfigureAwait(false);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        _logger.LogError(ex, "Error while sending queued scrobbles");
+                    }
+                }
+                while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false));
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Shutting down.
+            }
         }
 
         /// <summary>
         /// Performs application-defined tasks associated with freeing, releasing, or resetting unmanaged resources.
         /// </summary>
-        public Task StopAsync(CancellationToken cancellationToken)
+        public async Task StopAsync(CancellationToken cancellationToken)
         {
+            // Stop retrying queued scrobbles; anything still queued is on disk for next start.
+            if (_flushCancellation != null)
+            {
+                _flushCancellation.Cancel();
+                try
+                {
+                    await _flushLoop.ConfigureAwait(false);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+
+                _flushCancellation.Dispose();
+                _flushCancellation = null;
+            }
+
             // Unbind events
             _sessionManager.PlaybackStart -= PlaybackStart;
             _sessionManager.PlaybackStopped -= PlaybackStopped;
@@ -336,7 +390,6 @@
             // Clean up
             _apiClient = null;
             _playbackStartTimes.Dispose();
-            return Task.CompletedTask;
         }
 
         public void Dispose()

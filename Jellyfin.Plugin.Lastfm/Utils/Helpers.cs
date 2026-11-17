@@ -8,6 +8,11 @@
     using System.Linq;
     using System.Net.Http;
     using MediaBrowser.Common.Net;
+    using System.Text.Json;
+    using System.Threading;
+    using System.Threading.Tasks;
+    using Api;
+    using Microsoft.Extensions.Logging;
     using System.Security.Cryptography;
     using System.Text;
 
@@ -45,6 +50,59 @@
             return sb.ToString();
         }
 
+        /// <summary>
+        /// GETs a Last.fm API URL for the metadata providers and returns the body, or null
+        /// when Last.fm is rate limiting this server (HTTP 429 or error 29) or a pause is in effect.
+        /// </summary>
+        public static async Task<string> GetLastfmJsonAsync(IHttpClientFactory httpClientFactory, string url, ILogger logger, CancellationToken cancellationToken)
+        {
+            if (LastfmRateLimit.IsLimited(out var remaining))
+            {
+                logger.LogDebug("Last.fm rate limit in effect for another {Remaining}; skipping metadata lookup", remaining);
+                return null;
+            }
+
+            using var response = await CreateHttpClient(httpClientFactory).GetAsync(url, cancellationToken).ConfigureAwait(false);
+            if (LastfmRateLimit.IsRateLimitResponse(response))
+            {
+                var pause = LastfmRateLimit.RegisterLimit(response);
+                logger.LogWarning("Last.fm rate limit hit (HTTP 429) during metadata lookup. Pausing all Last.fm requests for {Pause}", pause);
+                return null;
+            }
+
+            var body = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            if (IsRateLimitErrorBody(body))
+            {
+                var pause = LastfmRateLimit.RegisterLimit(response);
+                logger.LogWarning("Last.fm rate limit hit (error 29) during metadata lookup. Pausing all Last.fm requests for {Pause}", pause);
+                return null;
+            }
+
+            LastfmRateLimit.RegisterSuccess();
+            return body;
+        }
+
+        private static bool IsRateLimitErrorBody(string body)
+        {
+            if (string.IsNullOrWhiteSpace(body) || !body.Contains("\"error\"", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            try
+            {
+                using var document = JsonDocument.Parse(body);
+                return document.RootElement.ValueKind == JsonValueKind.Object
+                    && document.RootElement.TryGetProperty("error", out var error)
+                    && error.ValueKind == JsonValueKind.Number
+                    && error.GetInt32() == LastfmRateLimit.RateLimitErrorCode;
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
+        }
+
         public static void AppendSignature(ref Dictionary<string, string> data)
         {
             data.Add("api_sig", CreateSignature(data));
@@ -76,7 +134,8 @@
         {
             var s = new StringBuilder();
 
-            foreach (var item in data.OrderBy(x => x.Key))
+            // Last.fm requires parameter names sorted in ASCII order, e.g. artist[10] before artist[1].
+            foreach (var item in data.OrderBy(x => x.Key, StringComparer.Ordinal))
                 s.Append(String.Format("{0}{1}", item.Key, item.Value));
 
             //Append secret

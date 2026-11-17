@@ -227,7 +227,17 @@ internal sealed class ScrobbleTestContext
         typeof(LastfmApiClient)
             .GetField("_scrobbleCache", BindingFlags.Instance | BindingFlags.NonPublic)!
             .SetValue(Api, new MemoryCache(new MemoryCacheOptions { Clock = Clock }));
+
+        // Each context gets its own queue file and a clean rate limiter: both are otherwise shared.
+        QueuePath = Path.Combine(Path.GetTempPath(), "lastfm-queue-" + Guid.NewGuid() + ".json");
+        typeof(LastfmApiClient)
+            .GetField("_queue", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(Api, new ScrobbleQueue(NullLogger.Instance, () => QueuePath));
+        LastfmRateLimit.Reset();
+        LastfmRateLimit.UtcNow = () => Clock.UtcNow.UtcDateTime;
     }
+
+    public string QueuePath { get; }
 
     public User User { get; }
 
@@ -319,6 +329,9 @@ internal sealed class FakeHttp : HttpMessageHandler
 
     public List<string> UserAgents { get; } = new();
 
+    /// <summary>Optional per-request override: given a scrobble request body, returns the JSON to answer with, or null for the default.</summary>
+    public Func<string, string> Responder { get; set; }
+
     private readonly List<(string Body, Uri Uri)> _requests = new();
 
     public IReadOnlyList<(string Body, Uri Uri)> Requests
@@ -365,8 +378,18 @@ internal sealed class FakeHttp : HttpMessageHandler
             throw new HttpRequestException("Simulated transport error");
         }
 
-        var json = Failure switch
+        if (Failure == "429")
         {
+            var limited = new HttpResponseMessage(HttpStatusCode.TooManyRequests) { Content = new StringContent("Too Many Requests") };
+            limited.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromSeconds(120));
+            return limited;
+        }
+
+        var json = Responder?.Invoke(body) ?? Failure switch
+        {
+            "session" => "{\"error\":9,\"message\":\"Invalid session key\"}",
+            "rejected" => "{\"error\":6,\"message\":\"Invalid parameters\"}",
+            "ratelimit" => "{\"error\":29,\"message\":\"Rate limit exceeded\"}",
             "error" => "{\"error\":11,\"message\":\"Simulated service error\"}",
             "ignored" => "{\"scrobbles\":{\"@attr\":{\"accepted\":0,\"ignored\":1}}}",
             "invalid" => "not json",

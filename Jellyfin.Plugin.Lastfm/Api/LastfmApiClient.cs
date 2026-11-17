@@ -6,6 +6,8 @@
     using Models.Responses;
     using Resources;
     using System;
+    using System.Collections.Generic;
+    using System.IO;
     using Microsoft.Extensions.Caching.Memory;
     using System.Linq;
     using System.Net.Http;
@@ -23,10 +25,57 @@
         private readonly MemoryCache _scrobbleCache = new(new MemoryCacheOptions());
         private readonly object _scrobbleLock = new();
 
+        private readonly ScrobbleQueue _queue;
+        private readonly SemaphoreSlim _flushLock = new(1, 1);
+
         public LastfmApiClient(IHttpClientFactory httpClientFactory, ILogger logger) : base(httpClientFactory, logger)
         {
             _logger = logger;
+            _queue = new ScrobbleQueue(logger, ScrobbleQueue.DefaultFilePath);
         }
+
+        /// <summary>Scrobbles waiting to be resubmitted.</summary>
+        public ScrobbleQueue Queue => _queue;
+
+        private enum SubmitOutcome
+        {
+            /// <summary>Last.fm processed the request (accepted or ignored).</summary>
+            Ok,
+            /// <summary>Temporary failure: keep the scrobble and retry later.</summary>
+            Retry,
+            /// <summary>The session key was rejected (error 9): hold until the account is re-linked.</summary>
+            InvalidSession,
+            /// <summary>Permanent rejection: retrying unchanged would fail the same way.</summary>
+            Rejected
+        }
+
+        /// <summary>
+        /// Classifies a response per https://www.last.fm/api/scrobbling: retry errors 11 and 16,
+        /// re-authenticate on 9, and do not retry anything else. Rate limiting (29 / HTTP 429)
+        /// and missing or unreadable responses are also treated as temporary.
+        /// </summary>
+        private static SubmitOutcome Classify(BaseResponse response)
+        {
+            if (response == null)
+            {
+                return SubmitOutcome.Retry;
+            }
+
+            if (!response.IsError())
+            {
+                return SubmitOutcome.Ok;
+            }
+
+            return response.ErrorCode switch
+            {
+                9 => SubmitOutcome.InvalidSession,
+                11 or 16 or LastfmRateLimit.RateLimitErrorCode => SubmitOutcome.Retry,
+                _ => SubmitOutcome.Rejected
+            };
+        }
+
+        private static bool IsTransportFailure(Exception ex) =>
+            ex is HttpRequestException or TaskCanceledException or IOException;
 
 
 
@@ -98,6 +147,13 @@
                 return;
             }
 
+            // Last.fm: send cached scrobbles before new ones, in order. Done before the
+            // duplicate check so repeated stop events for a queued play also retry the queue.
+            if (_queue.HasPending(user.MediaBrowserUserId))
+            {
+                await FlushQueueAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+
             var cacheKey = $"{user.Username}:{item.Id}:{playbackStartTime.Ticks}";
             if (CheckAndUpdateScrobbleCache(cacheKey))
                 return;
@@ -136,23 +192,42 @@
             }
             request.TrackNumber = item.IndexNumber;
 
-            var accepted = false;
+            // Keep the duplicate guard when the scrobble was sent or queued; release it otherwise
+            // so a later stop event for the same play can try again.
+            var handled = false;
+            var sent = false;
             try
             {
-                _logger.LogInformation("Submitting scrobble: user={User}, payload={Payload}", user.Username, DescribeRequest(request));
-
-                var response = await Post<ScrobbleRequest, ScrobbleResponse>(request);
-
-                if (response == null)
+                if (_queue.HasPending(user.MediaBrowserUserId))
                 {
-                    _logger.LogError("Scrobble failed with null response: user={User}, payload={Payload}", user.Username, DescribeRequest(request));
+                    EnqueueScrobble(request, user, "earlier scrobbles for this user are still waiting to be sent");
+                    handled = true;
                     return;
                 }
 
-                if (response.IsError())
+                _logger.LogInformation("Submitting scrobble: user={User}, payload={Payload}", user.Username, DescribeRequest(request));
+
+                var response = await Post<ScrobbleRequest, ScrobbleResponse>(request).ConfigureAwait(false);
+
+                switch (Classify(response))
                 {
-                    _logger.LogError("Scrobble failed: user={User}, errorCode={ErrorCode}, message={Message}, hint={Hint}, payload={Payload}", user.Username, response.ErrorCode, response.Message, DescribeApiError(response.ErrorCode), DescribeRequest(request));
-                    return;
+                    case SubmitOutcome.Retry:
+                        EnqueueScrobble(request, user, response == null
+                            ? "no usable response from Last.fm"
+                            : $"error {response.ErrorCode}: {response.Message}");
+                        handled = true;
+                        return;
+
+                    case SubmitOutcome.InvalidSession:
+                        EnqueueScrobble(request, user, "session key rejected");
+                        _queue.MarkInvalidSession(user.MediaBrowserUserId, user.SessionKey);
+                        _logger.LogWarning("Last.fm rejected the session key for {User}. Scrobbles are kept and will be sent once the account is re-linked on the plugin configuration page.", user.Username);
+                        handled = true;
+                        return;
+
+                    case SubmitOutcome.Rejected:
+                        _logger.LogError("Scrobble failed: user={User}, errorCode={ErrorCode}, message={Message}, hint={Hint}, payload={Payload}", user.Username, response.ErrorCode, response.Message, DescribeApiError(response.ErrorCode), DescribeRequest(request));
+                        return;
                 }
 
                 // Last.fm reports a silently dropped scrobble with HTTP 200 and no error code.
@@ -167,7 +242,14 @@
                 }
 
                 _logger.LogInformation("Scrobble succeeded: user={User}, artist={Artist}, track={Track}, album={Album}", user.Username, request.Artist, request.Track, request.Album);
-                accepted = true;
+                handled = true;
+                sent = true;
+            }
+            catch (Exception ex) when (IsTransportFailure(ex))
+            {
+                _logger.LogWarning(ex, "Could not reach Last.fm to scrobble: user={User}", user.Username);
+                EnqueueScrobble(request, user, "could not reach Last.fm");
+                handled = true;
             }
             catch (Exception ex)
             {
@@ -175,8 +257,154 @@
             }
             finally
             {
-                if (!accepted)
+                if (!handled)
                     _scrobbleCache.Remove(cacheKey);
+            }
+
+            // Last.fm is reachable again: send anything other users have waiting.
+            if (sent && _queue.Count > 0)
+            {
+                await FlushQueueAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+        }
+
+        private void EnqueueScrobble(ScrobbleRequest request, LastfmUser user, string reason)
+        {
+            _queue.Enqueue(QueuedScrobble.From(request, user.MediaBrowserUserId));
+            _logger.LogWarning("Scrobble queued for retry ({Reason}): user={User}, artist={Artist}, track={Track}. Pending: {Pending}", reason, user.Username, request.Artist, request.Track, _queue.Count);
+        }
+
+        /// <summary>
+        /// Resubmits queued scrobbles in batches of up to 50, oldest first. Stops as soon as
+        /// Last.fm is unavailable or rate limiting, so the remaining scrobbles keep their order.
+        /// Concurrent calls return immediately while a flush is running.
+        /// </summary>
+        public async Task FlushQueueAsync(CancellationToken cancellationToken)
+        {
+            if (_queue.Count == 0 || LastfmRateLimit.IsLimited(out _))
+            {
+                return;
+            }
+
+            if (!await _flushLock.WaitAsync(0, cancellationToken).ConfigureAwait(false))
+            {
+                return;
+            }
+
+            try
+            {
+                foreach (var userId in _queue.UsersWithPending())
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+
+                    var user = UserHelpers.GetUser(userId);
+                    if (user == null || string.IsNullOrWhiteSpace(user.SessionKey))
+                    {
+                        _logger.LogDebug("Keeping queued scrobbles for user {UserId}: no linked Last.fm account", userId);
+                        continue;
+                    }
+
+                    if (_queue.IsAwaitingReauthentication(userId, user.SessionKey))
+                    {
+                        _logger.LogDebug("Keeping queued scrobbles for {User} until the Last.fm account is re-linked", user.Username);
+                        continue;
+                    }
+
+                    if (!await FlushUserAsync(user, cancellationToken).ConfigureAwait(false))
+                    {
+                        return;
+                    }
+                }
+            }
+            finally
+            {
+                _flushLock.Release();
+            }
+        }
+
+        /// <returns>False when Last.fm is unavailable and flushing should stop for now.</returns>
+        private async Task<bool> FlushUserAsync(LastfmUser user, CancellationToken cancellationToken)
+        {
+            var batchSize = BatchScrobbleRequest.MaxBatchSize;
+            while (true)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+
+                var batch = _queue.PeekBatch(user.MediaBrowserUserId, batchSize);
+                if (batch.Count == 0)
+                {
+                    return true;
+                }
+
+                var request = new BatchScrobbleRequest
+                {
+                    Scrobbles = batch.Select(b => b.ToRequest()).ToList(),
+                    ApiKey = Strings.Keys.LastfmApiKey,
+                    Method = Strings.Methods.Scrobble,
+                    SessionKey = user.SessionKey,
+                    Secure = true
+                };
+
+                BatchScrobbleResponse response;
+                try
+                {
+                    response = await Post<BatchScrobbleRequest, BatchScrobbleResponse>(request).ConfigureAwait(false);
+                }
+                catch (Exception ex) when (IsTransportFailure(ex))
+                {
+                    _logger.LogWarning(ex, "Could not reach Last.fm to send {Count} queued scrobble(s) for {User}", batch.Count, user.Username);
+                    return false;
+                }
+
+                switch (Classify(response))
+                {
+                    case SubmitOutcome.Ok:
+                        _queue.Remove(batch);
+                        LogBatchResult(user, batch, response);
+                        continue;
+
+                    case SubmitOutcome.Retry:
+                        _logger.LogInformation("Last.fm still unavailable ({Error}); {Pending} scrobble(s) stay queued", response == null ? "no usable response" : $"error {response.ErrorCode}", _queue.Count);
+                        return false;
+
+                    case SubmitOutcome.InvalidSession:
+                        _queue.MarkInvalidSession(user.MediaBrowserUserId, user.SessionKey);
+                        _logger.LogWarning("Last.fm rejected the session key for {User}. Queued scrobbles are kept until the account is re-linked.", user.Username);
+                        return true;
+
+                    case SubmitOutcome.Rejected:
+                        if (batch.Count > 1)
+                        {
+                            // Send one at a time so a single bad scrobble cannot hold back the rest.
+                            _logger.LogWarning("Last.fm rejected a batch of {Count} queued scrobbles (error {ErrorCode}: {Message}); retrying them individually", batch.Count, response.ErrorCode, response.Message);
+                            batchSize = 1;
+                            continue;
+                        }
+
+                        _queue.Remove(batch);
+                        _logger.LogError("Dropping queued scrobble rejected by Last.fm: user={User}, errorCode={ErrorCode}, message={Message}, hint={Hint}, payload={Payload}", user.Username, response.ErrorCode, response.Message, DescribeApiError(response.ErrorCode), DescribeRequest(request.Scrobbles[0]));
+                        continue;
+                }
+            }
+        }
+
+        private void LogBatchResult(LastfmUser user, IReadOnlyList<QueuedScrobble> batch, BatchScrobbleResponse response)
+        {
+            var attributes = response.Scrobbles?.Attributes;
+            _logger.LogInformation("Sent {Count} queued scrobble(s) for {User}: accepted={Accepted}, ignored={Ignored}. Still pending: {Pending}", batch.Count, user.Username, attributes?.Accepted, attributes?.Ignored, _queue.Count);
+
+            if (attributes == null || attributes.Ignored == 0)
+            {
+                return;
+            }
+
+            var messages = response.Scrobbles.IgnoredMessages();
+            for (var i = 0; i < batch.Count && i < messages.Count; i++)
+            {
+                if (messages[i] is { Code: > 0 } ignored)
+                {
+                    _logger.LogWarning("Queued scrobble ignored by Last.fm: user={User}, artist={Artist}, track={Track}, code={Code}, reason={Reason}", user.Username, batch[i].Artist, batch[i].Track, ignored.Code, DescribeIgnoredScrobble(ignored));
+                }
             }
         }
 
@@ -224,6 +452,14 @@
                 if (response != null && !response.IsError())
                 {
                     _logger.LogInformation("{0} is now playing artist={1}, track={2}, album={3}", user.Username, request.Artist, request.Track, request.Album);
+                    return;
+                }
+
+                // Now playing updates are not retried (https://www.last.fm/api/scrobbling), so
+                // skipping one while rate limited is expected rather than an error.
+                if (response?.ErrorCode == LastfmRateLimit.RateLimitErrorCode)
+                {
+                    _logger.LogDebug("Skipped now playing for {Track}: {Message}", item.Name, response.Message);
                     return;
                 }
 
