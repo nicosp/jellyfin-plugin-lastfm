@@ -194,6 +194,62 @@ public sealed class ScrobbleRegressionTests
 
         Assert.Equal(1, context.Http.Scrobbles);
     }
+
+    [Fact]
+    public void AlternativeModeKeepsScrobblingWhileLovedTracksImportRuns()
+    {
+        var context = new ScrobbleTestContext();
+        context.LastfmUser.Options.AlternativeMode = true;
+        context.LastfmUser.Options.SyncFavourites = true;
+        var track = context.CreateTrack();
+
+        Plugin.Syncing = true;
+        try
+        {
+            // The import's own favourite changes must not be echoed back as loves...
+            context.Invoke("UserDataSaved", new UserDataSaveEventArgs
+            {
+                Item = track,
+                UserId = context.User.Id,
+                UserData = new MediaBrowser.Controller.Entities.UserItemData { Key = "k", IsFavorite = true },
+                SaveReason = MediaBrowser.Model.Entities.UserDataSaveReason.UpdateUserRating
+            });
+
+            // ...but a track finishing meanwhile is still scrobbled.
+            context.Start(track);
+            context.Invoke("UserDataSaved", new UserDataSaveEventArgs
+            {
+                Item = track,
+                UserId = context.User.Id,
+                SaveReason = MediaBrowser.Model.Entities.UserDataSaveReason.PlaybackFinished
+            });
+        }
+        finally
+        {
+            Plugin.Syncing = false;
+        }
+
+        Assert.DoesNotContain(context.Http.Requests, r => r.Body.Contains("method=track.love", StringComparison.Ordinal));
+        Assert.Equal(1, context.Http.Scrobbles);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(0L)]
+    public void TrackWithUnknownLengthNeedsFourMinutesOfPlay(long? runtimeTicks)
+    {
+        var context = new ScrobbleTestContext();
+        var track = context.CreateTrack();
+        track.RunTimeTicks = runtimeTicks;
+
+        context.Start(track, playSessionId: "short");
+        context.Stop(track, TimeSpan.FromSeconds(20).Ticks, playSessionId: "short");
+        Assert.Equal(0, context.Http.Scrobbles);
+
+        context.Start(track, playSessionId: "long");
+        context.Stop(track, TimeSpan.FromMinutes(4).Ticks, playSessionId: "long");
+        Assert.Equal(1, context.Http.Scrobbles);
+    }
 }
 
 internal sealed class ScrobbleTestContext
@@ -219,10 +275,8 @@ internal sealed class ScrobbleTestContext
         });
 
         Http = new FakeHttp();
-        _entry = new ServerEntryPoint(null, new FakeFactory(Http), NullLoggerFactory.Instance, null);
-        Api = (LastfmApiClient)typeof(ServerEntryPoint)
-            .GetField("_apiClient", BindingFlags.Instance | BindingFlags.NonPublic)!
-            .GetValue(_entry)!;
+        Api = new LastfmApiClient(new FakeFactory(Http), NullLogger.Instance);
+        _entry = new ServerEntryPoint(null, Api, NullLoggerFactory.Instance, null);
         Clock = new FakeClock();
         typeof(LastfmApiClient)
             .GetField("_scrobbleCache", BindingFlags.Instance | BindingFlags.NonPublic)!

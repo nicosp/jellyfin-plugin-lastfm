@@ -122,6 +122,23 @@ namespace Jellyfin.Plugin.Lastfm.Api
             }
         }
 
+        /// <summary>Removes and returns scrobbles whose timestamp is before <paramref name="minTimestamp"/>.</summary>
+        public IReadOnlyList<QueuedScrobble> RemoveOlderThan(int minTimestamp)
+        {
+            lock (_lock)
+            {
+                EnsureLoaded();
+                var expired = _items.Where(i => i.Timestamp < minTimestamp).ToList();
+                if (expired.Count > 0)
+                {
+                    _items.RemoveAll(i => i.Timestamp < minTimestamp);
+                    Save();
+                }
+
+                return expired;
+            }
+        }
+
         /// <summary>Holds a user's scrobbles until their session key changes.</summary>
         public void MarkInvalidSession(Guid userId, string sessionKey)
         {

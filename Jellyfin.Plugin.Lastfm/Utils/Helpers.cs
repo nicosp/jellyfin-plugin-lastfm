@@ -50,12 +50,38 @@
             return sb.ToString();
         }
 
+        // Last.fm allows about 5 requests per second per IP, averaged over 5 minutes. Library scans
+        // can issue metadata lookups much faster than that, and hitting the limit pauses scrobbling
+        // too, so lookups are spaced out to stay under it with room left for scrobbles.
+        internal static readonly TimeSpan MetadataRequestInterval = TimeSpan.FromMilliseconds(250);
+        private static readonly object MetadataThrottleLock = new();
+        private static DateTime _nextMetadataRequestUtc = DateTime.MinValue;
+
+        /// <summary>Reserves the next metadata request slot and returns how long to wait for it.</summary>
+        private static TimeSpan ReserveMetadataRequestSlot()
+        {
+            lock (MetadataThrottleLock)
+            {
+                var now = DateTime.UtcNow;
+                var slot = _nextMetadataRequestUtc > now ? _nextMetadataRequestUtc : now;
+                _nextMetadataRequestUtc = slot + MetadataRequestInterval;
+                return slot - now;
+            }
+        }
+
         /// <summary>
         /// GETs a Last.fm API URL for the metadata providers and returns the body, or null
         /// when Last.fm is rate limiting this server (HTTP 429 or error 29) or a pause is in effect.
+        /// Requests are spaced at least <see cref="MetadataRequestInterval"/> apart.
         /// </summary>
         public static async Task<string> GetLastfmJsonAsync(IHttpClientFactory httpClientFactory, string url, ILogger logger, CancellationToken cancellationToken)
         {
+            var wait = ReserveMetadataRequestSlot();
+            if (wait > TimeSpan.Zero)
+            {
+                await Task.Delay(wait, cancellationToken).ConfigureAwait(false);
+            }
+
             if (LastfmRateLimit.IsLimited(out var remaining))
             {
                 logger.LogDebug("Last.fm rate limit in effect for another {Remaining}; skipping metadata lookup", remaining);

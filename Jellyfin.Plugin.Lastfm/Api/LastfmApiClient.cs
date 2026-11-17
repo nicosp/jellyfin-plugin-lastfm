@@ -20,6 +20,9 @@
     {
         private readonly ILogger _logger;
 
+        // Last.fm ignores scrobbles with a timestamp more than 14 days old (ignored code 3).
+        internal static readonly TimeSpan MaxScrobbleAge = TimeSpan.FromDays(14);
+
         // Retain play-through identities as long as ServerEntryPoint retains their start times.
         private static readonly TimeSpan DuplicateScrobbleTTL = TimeSpan.FromHours(24);
         private readonly MemoryCache _scrobbleCache = new(new MemoryCacheOptions());
@@ -293,6 +296,13 @@
 
             try
             {
+                // Sending these would only get them ignored, so drop them with a clear message instead.
+                var expired = _queue.RemoveOlderThan(Helpers.ToTimestamp(DateTime.UtcNow - MaxScrobbleAge));
+                foreach (var scrobble in expired)
+                {
+                    _logger.LogWarning("Dropping queued scrobble older than {Days} days, which Last.fm no longer accepts: user={UserId}, artist={Artist}, track={Track}, playedAt={PlayedAt:o}", MaxScrobbleAge.TotalDays, scrobble.UserId, scrobble.Artist, scrobble.Track, DateTimeOffset.FromUnixTimeSeconds(scrobble.Timestamp));
+                }
+
                 foreach (var userId in _queue.UsersWithPending())
                 {
                     cancellationToken.ThrowIfCancellationRequested();

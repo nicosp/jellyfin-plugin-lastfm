@@ -1,5 +1,6 @@
 using System.Net;
 using Jellyfin.Plugin.Lastfm.Api;
+using Jellyfin.Plugin.Lastfm.Models;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
@@ -44,6 +45,31 @@ public sealed class ScrobbleQueueTests
         Assert.Contains("track[1]=second", bodies[2]);
         // ...then the new one on its own.
         Assert.Contains("track=third", bodies[3]);
+        Assert.Equal(0, context.Api.Queue.Count);
+    }
+
+    [Fact]
+    public async Task QueuedScrobblesTooOldForLastfmAreDroppedInsteadOfSent()
+    {
+        var context = new ScrobbleTestContext();
+
+        // As if loaded from disk after the server was down for over two weeks.
+        foreach (var (name, age) in new[] { ("old", TimeSpan.FromDays(15)), ("recent", TimeSpan.FromDays(13)) })
+        {
+            context.Api.Queue.Enqueue(new QueuedScrobble
+            {
+                UserId = context.User.Id,
+                Track = name,
+                Artist = "artist",
+                Timestamp = Utils.Helpers.ToTimestamp(DateTime.UtcNow - age)
+            });
+        }
+
+        await context.Api.FlushQueueAsync(CancellationToken.None);
+
+        var batch = ScrobbleBodies(context).Last();
+        Assert.Contains("track[0]=recent", batch);
+        Assert.DoesNotContain("old", batch);
         Assert.Equal(0, context.Api.Queue.Count);
     }
 

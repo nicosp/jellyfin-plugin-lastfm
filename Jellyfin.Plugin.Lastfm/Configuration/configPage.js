@@ -86,7 +86,11 @@ var LastfmScrobblerConfigurationPage = {
 
         this.$el.find('#lastfmApiHost').val(this._config.LastfmApiHost || this.configDefaults.LastfmApiHost);
         this.$el.find('#lastfmUsername').val(data.Username);
-        this.$el.find('#lastfmPassword').val(data.SessionKey);
+        // Never put the session key in the password box: it is not a password, and sending it
+        // back as one (e.g. after changing the API host) makes the login fail.
+        this.$el.find('#lastfmPassword')
+            .val('')
+            .attr('placeholder', data.SessionKey ? 'Leave blank to keep the current sign-in' : '');
         this.$el.find('#lastfmOptionScrobble').prop('checked', data.Options.Scrobble);
         this.$el.find('#lastfmOptionFavourite').prop('checked', data.Options.SyncFavourites);
         this.$el.find('#lastfmOptionAltMode').prop('checked', data.Options.AlternativeMode);
@@ -98,11 +102,34 @@ var LastfmScrobblerConfigurationPage = {
         var newApiHost = this.$el.find('#lastfmApiHost').val() || this.configDefaults.LastfmApiHost;
         var apiHostChanged = (previousApiHost || '').trim().toLowerCase() !== (newApiHost || '').trim().toLowerCase();
 
-        this._config.LastfmApiHost = newApiHost;
+        var isLinked = !!(userConfig && userConfig.SessionKey);
 
-        if (!username && !password) {
+        // A blank password means "keep the current sign-in".
+        if (!password) {
+            if (isLinked && apiHostChanged) {
+                this.handleError('Enter the Last.fm password again to sign in to the new API host.');
+                return null;
+            }
+
+            if (!isLinked && username) {
+                this.handleError('Enter the password to link this Last.fm account.');
+                return null;
+            }
+
+            this._config.LastfmApiHost = newApiHost;
+            if (isLinked) {
+                userConfig.Options = this.getUIOptionsValues();
+            }
+
             return this.doSave();
         }
+
+        if (!username) {
+            this.handleError('Enter the Last.fm username.');
+            return null;
+        }
+
+        this._config.LastfmApiHost = newApiHost;
 
         // If the config for the user doesn't exist, create one
         if (!userConfig) {
@@ -113,11 +140,6 @@ var LastfmScrobblerConfigurationPage = {
 
         // Attach current option settings to
         userConfig.Options = this.getUIOptionsValues();
-
-        // Dont try and login again if the password field is still the SessionKey
-        if (userConfig.SessionKey == password && !apiHostChanged) {
-            return this.doSave();
-        }
 
         // Get session with user data
         return ApiClient.LastfmGetMobileSession(username, password, this._config.LastfmApiHost).then($.proxy(function (data) {

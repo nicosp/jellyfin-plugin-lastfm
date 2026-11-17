@@ -1,5 +1,4 @@
 ﻿using Microsoft.Extensions.Logging;
-using System.Net.Http;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -23,10 +22,10 @@ namespace Jellyfin.Plugin.Lastfm.Api
         private readonly LastfmApiClient _apiClient;
         private readonly ILogger<RestApi> _logger;
 
-        public RestApi(IHttpClientFactory httpClientFactory, ILoggerFactory loggerFactory)
+        public RestApi(LastfmApiClient apiClient, ILogger<RestApi> logger)
         {
-            _logger = loggerFactory.CreateLogger<RestApi>();
-            _apiClient = new LastfmApiClient(httpClientFactory, _logger);
+            _apiClient = apiClient;
+            _logger = logger;
         }
 
         [HttpPost]

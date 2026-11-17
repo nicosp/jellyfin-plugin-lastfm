@@ -12,7 +12,6 @@
     using System;
     using System.Collections.Generic;
     using System.Linq;
-    using System.Net.Http;
     using System.Threading;
     using System.Threading.Tasks;
     using Utils;
@@ -29,13 +28,13 @@
         private readonly ILogger<ImportLastfmData> _logger;
         private readonly LastfmApiClient _apiClient;
 
-        public ImportLastfmData(IHttpClientFactory httpClientFactory, IUserManager userManager, IUserDataManager userDataManager, ILibraryManager libraryManager, ILoggerFactory loggerFactory)
+        public ImportLastfmData(LastfmApiClient apiClient, IUserManager userManager, IUserDataManager userDataManager, ILibraryManager libraryManager, ILogger<ImportLastfmData> logger)
         {
             _userManager = userManager;
             _userDataManager = userDataManager;
             _libraryManager = libraryManager;
-            _logger = loggerFactory.CreateLogger<ImportLastfmData>();
-            _apiClient = new LastfmApiClient(httpClientFactory, loggerFactory.CreateLogger<ImportLastfmData>());
+            _logger = logger;
+            _apiClient = apiClient;
         }
 
         public string Name => "Import Last.fm Loved Tracks";
@@ -122,7 +121,7 @@
             }
 
             // remove any results from last fm loved tracks that do _not_ have an associated musicbrainz id
-            lovedTracks.RemoveAll(t => String.IsNullOrEmpty(t.Artist.MusicBrainzId));
+            lovedTracks.RemoveAll(t => String.IsNullOrEmpty(t.Artist?.MusicBrainzId));
             _logger.LogInformation("User {User} has {SongCount} loved tracks in last.fm that have an associated musicbrainz Artist id", user.Username, lovedTracks.Count);
             if (lovedTracks.Count == 0)
                 return;

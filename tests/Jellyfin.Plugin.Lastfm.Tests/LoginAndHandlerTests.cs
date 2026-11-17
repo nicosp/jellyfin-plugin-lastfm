@@ -16,7 +16,7 @@ public sealed class LoginAndHandlerTests
     {
         var context = new ScrobbleTestContext();
         context.Http.LoginGate = new TaskCompletionSource();
-        var api = new RestApi(new FakeFactory(context.Http), NullLoggerFactory.Instance);
+        var api = new RestApi(new LastfmApiClient(new FakeFactory(context.Http), NullLogger.Instance), NullLogger<RestApi>.Instance);
 
         // The login request is held open inside the HTTP call...
         var login = api.CreateMobileSession(new LastFMUser
